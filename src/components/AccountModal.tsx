@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  X, User, LogOut, AlertCircle, Loader2, CheckCircle2
+  X, Lock, User, LogIn, UserPlus, LogOut, AlertCircle, Loader2, CheckCircle2, ShieldAlert
 } from 'lucide-react';
 import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  updateProfile,
   signInWithPopup,
   GoogleAuthProvider,
   signOut,
@@ -26,13 +29,99 @@ export default function AccountModal({
   onAuthChange,
   totalLogsCount
 }: AccountModalProps) {
+  const [isRegister, setIsRegister] = useState<boolean>(false);
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<string>('');
 
+  // Suffix helper to treat plain usernames as emails internally for Firebase
+  const formatUsernameToEmail = (raw: string): string => {
+    const clean = raw.trim();
+    if (clean.includes('@')) {
+      return clean; // If user input standard email, use it directly
+    }
+    // Else map plain username to safe email suffix
+    return `${clean.toLowerCase()}@focusapp.local`;
+  };
+
   const clearStates = () => {
+    setUsername('');
+    setPassword('');
+    setConfirmPassword('');
     setError('');
     setSuccess('');
+  };
+
+  const handleAuthAction = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+
+    const cleanUsername = username.trim();
+    if (!cleanUsername) {
+      setError('Please enter a username or email address.');
+      return;
+    }
+
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters long.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      if (isRegister) {
+        // Sign Up Flow
+        if (password !== confirmPassword) {
+          setError('Passwords do not match.');
+          setIsLoading(false);
+          return;
+        }
+
+        const email = formatUsernameToEmail(cleanUsername);
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        
+        // Also update displayName to represent the custom username
+        const displayName = cleanUsername.includes('@') ? cleanUsername.split('@')[0] : cleanUsername;
+        await updateProfile(userCredential.user, { displayName });
+        
+        onAuthChange(userCredential.user);
+        setSuccess('Account created successfully! Syncing logs...');
+        setTimeout(() => {
+          onClose();
+          clearStates();
+        }, 1500);
+      } else {
+        // Sign In Flow
+        const email = formatUsernameToEmail(cleanUsername);
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        
+        onAuthChange(userCredential.user);
+        setSuccess('Logged in successfully!');
+        setTimeout(() => {
+          onClose();
+          clearStates();
+        }, 1500);
+      }
+    } catch (err: any) {
+      console.error('Auth error: ', err);
+      let errMsg = 'Authentication failed. Please check your credentials and try again.';
+      
+      if (err.code === 'auth/email-already-in-use') {
+        errMsg = 'Username or email is already taken.';
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+        errMsg = 'Incorrect username, email, or password.';
+      } else if (err.message) {
+        errMsg = err.message;
+      }
+      setError(errMsg);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleGoogleSignIn = async () => {
@@ -180,16 +269,138 @@ export default function AccountModal({
           </div>
         ) : (
           /* Log In / Register Form */
-          <div className="space-y-4 text-center mt-2" id="account-auth-form">
+          <div className="space-y-4 text-center mt-2" id="account-auth-container">
             <p className="text-[11px] text-zinc-400 pb-2 border-b border-zinc-900/50">
               Sign in to safely synchronize your clock and focus history across all your devices.
             </p>
             
+            <form onSubmit={handleAuthAction} className="space-y-4" id="account-auth-form">
+              <div className="space-y-3.5 text-left">
+                <div>
+                  <label className="block text-[9.5px] uppercase tracking-widest text-zinc-500 font-semibold mb-1">
+                    Username or Email
+                  </label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+                    <input
+                      type="text"
+                      required
+                      maxLength={50}
+                      disabled={isLoading}
+                      placeholder="e.g. marcus"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 bg-zinc-950/40 border border-zinc-900 rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-sky-400/50 focus:bg-black font-mono transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[9.5px] uppercase tracking-widest text-zinc-500 font-semibold mb-1">
+                    Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      maxLength={32}
+                      disabled={isLoading}
+                      placeholder="Min 6 characters"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 bg-zinc-950/40 border border-zinc-900 rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-sky-400/50 focus:bg-black font-mono transition-all"
+                    />
+                  </div>
+                </div>
+
+                {isRegister && (
+                  <div>
+                    <label className="block text-[9.5px] uppercase tracking-widest text-zinc-500 font-semibold mb-1">
+                      Confirm Password
+                    </label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        maxLength={32}
+                        disabled={isLoading}
+                        placeholder="Confirm password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 bg-zinc-950/40 border border-zinc-900 rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-sky-400/50 focus:bg-black font-mono transition-all"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full flex items-center justify-center gap-2 py-2 border border-zinc-800 bg-zinc-900/20 hover:bg-zinc-900 hover:text-white rounded-lg text-[11px] font-semibold text-zinc-200 tracking-wider transition cursor-pointer uppercase disabled:opacity-50"
+                id="account-auth-submit"
+              >
+                {isLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin text-sky-400" />
+                ) : isRegister ? (
+                  <UserPlus className="h-3 w-3" />
+                ) : (
+                  <LogIn className="h-3 w-3" />
+                )}
+                <span>{isRegister ? 'Create Account' : 'Sign In'}</span>
+              </button>
+
+              <div className="text-[10px]" id="account-auth-toggle">
+                {isRegister ? (
+                  <p className="text-zinc-500">
+                    Already have an account?{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRegister(false);
+                        setError('');
+                      }}
+                      className="text-sky-400 hover:text-sky-350 cursor-pointer font-semibold underline"
+                    >
+                      Log In
+                    </button>
+                  </p>
+                ) : (
+                  <p className="text-zinc-500">
+                    New users?{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRegister(true);
+                        setError('');
+                      }}
+                      className="text-sky-400 hover:text-sky-350 cursor-pointer font-semibold underline"
+                    >
+                      Register free
+                    </button>
+                  </p>
+                )}
+              </div>
+            </form>
+
+            <div className="relative pt-2 pb-2">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t border-zinc-900/50"></span>
+              </div>
+              <div className="relative flex justify-center text-[10px]">
+                <span className="bg-black px-2 text-zinc-500">Or</span>
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={handleGoogleSignIn}
               disabled={isLoading}
-              className="w-full mt-2 flex items-center justify-center gap-3 py-3 border border-sky-900/50 bg-sky-950/20 hover:bg-sky-900/40 hover:border-sky-800 rounded-lg text-xs font-semibold text-sky-100 tracking-wider transition cursor-pointer uppercase disabled:opacity-50 shadow-lg shadow-sky-900/10"
+              className="w-full flex items-center justify-center gap-3 py-3 border border-sky-900/50 bg-sky-950/20 hover:bg-sky-900/40 hover:border-sky-800 rounded-lg text-xs font-semibold text-sky-100 tracking-wider transition cursor-pointer uppercase disabled:opacity-50 shadow-lg shadow-sky-900/10"
               id="account-google-auth"
             >
               {isLoading ? (
