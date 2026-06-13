@@ -1,13 +1,12 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  X, Lock, User, LogIn, UserPlus, LogOut, AlertCircle, Loader2, CheckCircle2, ShieldAlert
+  X, User, LogOut, AlertCircle, Loader2, CheckCircle2
 } from 'lucide-react';
 import { 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
+  signInWithPopup,
+  GoogleAuthProvider,
   signOut,
-  updateProfile,
   User as FirebaseUser
 } from 'firebase/auth';
 import { auth } from '../firebase';
@@ -27,92 +26,36 @@ export default function AccountModal({
   onAuthChange,
   totalLogsCount
 }: AccountModalProps) {
-  const [isRegister, setIsRegister] = useState<boolean>(false);
-  const [username, setUsername] = useState<string>('');
-  const [password, setPassword] = useState<string>('');
-  const [confirmPassword, setConfirmPassword] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [success, setSuccess] = useState<string>('');
 
-  // Suffix helper to treat plain usernames as emails internally for Firebase
-  const formatUsernameToEmail = (raw: string): string => {
-    const clean = raw.trim();
-    if (clean.includes('@')) {
-      return clean; // If user input standard email, use it directly
-    }
-    // Else map plain username to safe email suffix
-    return `${clean.toLowerCase()}@focusapp.local`;
-  };
-
   const clearStates = () => {
-    setUsername('');
-    setPassword('');
-    setConfirmPassword('');
     setError('');
     setSuccess('');
   };
 
-  const handleAuthAction = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGoogleSignIn = async () => {
     setError('');
     setSuccess('');
-
-    const cleanUsername = username.trim();
-    if (!cleanUsername) {
-      setError('Please enter a username or email address.');
-      return;
-    }
-
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters long.');
-      return;
-    }
-
     setIsLoading(true);
 
     try {
-      if (isRegister) {
-        // Sign Up Flow
-        if (password !== confirmPassword) {
-          setError('Passwords do not match.');
-          setIsLoading(false);
-          return;
-        }
-
-        const email = formatUsernameToEmail(cleanUsername);
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        
-        // Also update displayName to represent the custom username
-        const displayName = cleanUsername.includes('@') ? cleanUsername.split('@')[0] : cleanUsername;
-        await updateProfile(userCredential.user, { displayName });
-        
-        onAuthChange(userCredential.user);
-        setSuccess('Account created successfully! Syncing logs...');
-        setTimeout(() => {
-          onClose();
-          clearStates();
-        }, 1500);
-      } else {
-        // Sign In Flow
-        const email = formatUsernameToEmail(cleanUsername);
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        
-        onAuthChange(userCredential.user);
-        setSuccess('Logged in successfully!');
-        setTimeout(() => {
-          onClose();
-          clearStates();
-        }, 1500);
-      }
+      const provider = new GoogleAuthProvider();
+      const userCredential = await signInWithPopup(auth, provider);
+      
+      onAuthChange(userCredential.user);
+      setSuccess('Logged in successfully!');
+      setTimeout(() => {
+        onClose();
+        clearStates();
+      }, 1500);
     } catch (err: any) {
       console.error('Auth error: ', err);
-      let errMsg = 'Authentication failed. Please verify configurations.';
+      let errMsg = 'Authentication failed. Please check your connection or popup blocker.';
       
-      if (err.code === 'auth/email-already-in-use') {
-        errMsg = 'Username or email is already taken.';
-      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
-        errMsg = 'Incorrect username, email, or password.';
+      if (err.code === 'auth/popup-closed-by-user') {
+        errMsg = 'Login was cancelled. Please try again.';
       } else if (err.message) {
         errMsg = err.message;
       }
@@ -199,7 +142,7 @@ export default function AccountModal({
                   <User className="h-5 w-5 text-sky-300" />
                 </div>
                 <div>
-                  <p className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold">Username/Alias</p>
+                  <p className="text-[9px] text-zinc-500 uppercase tracking-widest font-semibold">Username</p>
                   <p className="text-sm font-semibold text-white">{currentUser.displayName || currentUser.email?.split('@')[0]}</p>
                 </div>
               </div>
@@ -237,123 +180,31 @@ export default function AccountModal({
           </div>
         ) : (
           /* Log In / Register Form */
-          <form onSubmit={handleAuthAction} className="space-y-4" id="account-auth-form">
-            <div className="space-y-3.5">
-              <div>
-                <label className="block text-[9.5px] uppercase tracking-widest text-zinc-500 font-semibold mb-1">
-                  Username or Email
-                </label>
-                <div className="relative">
-                  <User className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
-                  <input
-                    type="text"
-                    required
-                    maxLength={50}
-                    disabled={isLoading}
-                    placeholder="e.g. marcus"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 bg-zinc-950/40 border border-zinc-900 rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-sky-400/50 focus:bg-black font-mono transition-all"
-                  />
-                </div>
-                {!isRegister && (
-                  <span className="text-[8px] text-zinc-600 font-mono mt-0.5 block">
-                    Tip: Enter custom username (e.g. <span className="text-zinc-500">marcus</span>) to keep it simple!
-                  </span>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-[9.5px] uppercase tracking-widest text-zinc-500 font-semibold mb-1">
-                  Password
-                </label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    maxLength={32}
-                    disabled={isLoading}
-                    placeholder="Min 6 characters"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 bg-zinc-950/40 border border-zinc-900 rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-sky-400/50 focus:bg-black font-mono transition-all"
-                  />
-                </div>
-              </div>
-
-              {isRegister && (
-                <div>
-                  <label className="block text-[9.5px] uppercase tracking-widest text-zinc-500 font-semibold mb-1">
-                    Confirm Password
-                  </label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-zinc-500" />
-                    <input
-                      type="password"
-                      required
-                      minLength={6}
-                      maxLength={32}
-                      disabled={isLoading}
-                      placeholder="Confirm password"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 bg-zinc-950/40 border border-zinc-900 rounded-lg text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-sky-400/50 focus:bg-black font-mono transition-all"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-
+          <div className="space-y-4 text-center mt-2" id="account-auth-form">
+            <p className="text-[11px] text-zinc-400 pb-2 border-b border-zinc-900/50">
+              Sign in to safely synchronize your clock and focus history across all your devices.
+            </p>
+            
             <button
-              type="submit"
+              type="button"
+              onClick={handleGoogleSignIn}
               disabled={isLoading}
-              className="w-full flex items-center justify-center gap-2 py-2 border border-zinc-800 bg-zinc-900/20 hover:bg-zinc-900 hover:text-white rounded-lg text-[11px] font-semibold text-zinc-200 tracking-wider transition cursor-pointer uppercase disabled:opacity-50"
-              id="account-auth-submit"
+              className="w-full mt-2 flex items-center justify-center gap-3 py-3 border border-sky-900/50 bg-sky-950/20 hover:bg-sky-900/40 hover:border-sky-800 rounded-lg text-xs font-semibold text-sky-100 tracking-wider transition cursor-pointer uppercase disabled:opacity-50 shadow-lg shadow-sky-900/10"
+              id="account-google-auth"
             >
               {isLoading ? (
-                <Loader2 className="h-3 w-3 animate-spin text-sky-400" />
-              ) : isRegister ? (
-                <UserPlus className="h-3 w-3" />
+                <Loader2 className="h-4 w-4 animate-spin text-sky-400" />
               ) : (
-                <LogIn className="h-3 w-3" />
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path fillRule="evenodd" clipRule="evenodd" d="M23.52 12.2741C23.52 11.4236 23.4436 10.6038 23.3018 9.81665H12V14.4619H18.4527C18.1745 15.9621 17.3345 17.2343 16.0527 18.0931V21.1097H19.9309C22.2055 19.0145 23.52 15.9255 23.52 12.2741Z" fill="#fff"/>
+                  <path fillRule="evenodd" clipRule="evenodd" d="M12.0001 24.0001C15.2401 24.0001 17.9619 22.9272 19.931 21.1098L16.0528 18.0932C14.9892 18.8055 13.6146 19.2319 12.0001 19.2319C8.8746 19.2319 6.2237 17.123 5.2746 14.2862H1.2709V17.391C3.2455 21.3149 7.2928 24.0001 12.0001 24.0001Z" fill="#fff"/>
+                  <path fillRule="evenodd" clipRule="evenodd" d="M5.2746 14.2862C5.0346 13.5662 4.8982 12.7963 4.8982 12.0001C4.8982 11.2039 5.0346 10.434 5.2746 9.71401V6.60925H1.2709C0.4636 8.21735 0 10.0525 0 12.0001C0 13.9477 0.4636 15.7828 1.2709 17.3909L5.2746 14.2862Z" fill="#fff"/>
+                  <path fillRule="evenodd" clipRule="evenodd" d="M12.0001 4.76814C13.7619 4.76814 15.3437 5.37365 16.5873 6.56272L20.0182 3.13184C17.9564 1.20546 15.2401 0 12.0001 0C7.2928 0 3.2455 2.68516 1.2709 6.60912L5.2746 9.71388C6.2237 6.87713 8.8746 4.76814 12.0001 4.76814Z" fill="#fff"/>
+                </svg>
               )}
-              <span>{isRegister ? 'Create Free Account' : 'Sign In'}</span>
+              <span>Continue with Google</span>
             </button>
-
-            <div className="text-center pt-2 border-t border-zinc-900 text-[10px]" id="account-auth-toggle">
-              {isRegister ? (
-                <p className="text-zinc-500">
-                  Already have an account?{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRegister(false);
-                      setError('');
-                    }}
-                    className="text-sky-400 hover:text-sky-350 cursor-pointer font-semibold underline"
-                  >
-                    Log In
-                  </button>
-                </p>
-              ) : (
-                <p className="text-zinc-500">
-                  New users?{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRegister(true);
-                      setError('');
-                    }}
-                    className="text-sky-400 hover:text-sky-350 cursor-pointer font-semibold underline"
-                  >
-                    Register free
-                  </button>
-                </p>
-              )}
-            </div>
-          </form>
+          </div>
         )}
       </motion.div>
     </div>

@@ -30,9 +30,9 @@ service cloud.firestore {
         && log.id is string
         && log.id.size() <= 128
         && log.mode is string
-        && log.startTime is int
-        && log.endTime is int
-        && log.duration is int;
+        && log.startTime is number
+        && log.endTime is number
+        && log.duration is number;
     }
 
     // Rules for User specific documents and resources
