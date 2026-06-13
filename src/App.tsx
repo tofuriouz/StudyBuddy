@@ -27,7 +27,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, getDocFromServer } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, getDocFromServer, onSnapshot } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import AccountModal from './components/AccountModal';
 
@@ -167,63 +167,96 @@ export default function App() {
     };
     testConnection();
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      if (user) {
-        setIsLoadingCloud(true);
-        try {
-          const userDocRef = doc(db, 'users', user.uid);
-          const userDocSnap = await getDoc(userDocRef);
+    let unsubUser: (() => void) | null = null;
+    let unsubLogs: (() => void) | null = null;
 
-          const logsColRef = collection(db, 'users', user.uid, 'logs');
-          const logsSnap = await getDocs(logsColRef);
+    const testAndSubscribe = async (user: FirebaseUser) => {
+      setIsLoadingCloud(true);
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        const userDocSnap = await getDoc(userDocRef);
 
-          const cloudLogs: LogEntry[] = [];
-          logsSnap.forEach((docSnap) => {
-            cloudLogs.push(docSnap.data() as LogEntry);
+        if (!userDocSnap.exists()) {
+          // New cloud registration - push current state to initialize the cloud database
+          await setDoc(userDocRef, {
+            userId: user.uid,
+            activeMode,
+            lastStateChange,
+            sessionStart,
+            cumulativeTime
           });
 
-          // Sort descending by startTime to keep standard descending list
-          cloudLogs.sort((a, b) => b.startTime - a.startTime);
-
-          if (userDocSnap.exists()) {
-            const userData = userDocSnap.data();
-            if (userData.activeMode) {
-              setActiveMode(userData.activeMode as ActivityMode);
-            }
-            if (userData.lastStateChange) {
-              setLastStateChange(userData.lastStateChange);
-            }
-            if (userData.sessionStart) {
-              setSessionStart(userData.sessionStart);
-            }
-            if (userData.cumulativeTime) {
-              setCumulativeTime(userData.cumulativeTime as CumulativeTime);
-            }
-            setLogs(cloudLogs);
-          } else {
-            // New cloud registration - push current state to initialize the cloud database
-            await setDoc(userDocRef, {
-              userId: user.uid,
-              activeMode,
-              lastStateChange,
-              sessionStart,
-              cumulativeTime
-            });
-
-            for (const localLog of logs) {
-              await setDoc(doc(db, 'users', user.uid, 'logs', localLog.id), localLog);
-            }
+          for (const localLog of logs) {
+            await setDoc(doc(db, 'users', user.uid, 'logs', localLog.id), localLog);
           }
-        } catch (err: any) {
-          console.error("Firestore loading error: ", err);
-        } finally {
-          setIsLoadingCloud(false);
         }
+      } catch (err) {
+        console.error("Error bootstrapping cloud data: ", err);
+      } finally {
+        setIsLoadingCloud(false);
+      }
+
+      // Live subscription to user settings document
+      const userDocRef = doc(db, 'users', user.uid);
+      unsubUser = onSnapshot(userDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const userData = docSnap.data();
+          if (userData.activeMode) {
+            setActiveMode(prev => prev !== userData.activeMode ? (userData.activeMode as ActivityMode) : prev);
+          }
+          if (userData.lastStateChange) {
+            setLastStateChange(prev => prev !== userData.lastStateChange ? userData.lastStateChange : prev);
+          }
+          if (userData.sessionStart) {
+            setSessionStart(prev => prev !== userData.sessionStart ? userData.sessionStart : prev);
+          }
+          if (userData.cumulativeTime) {
+            setCumulativeTime(prev => {
+              const cloudCum = userData.cumulativeTime as CumulativeTime;
+              const changed = Object.keys(cloudCum).some(
+                key => prev[key as ActivityMode] !== cloudCum[key as ActivityMode]
+              );
+              return changed ? cloudCum : prev;
+            });
+          }
+        }
+      }, (err) => {
+        handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+      });
+
+      // Live subscription to focus log entries
+      const logsColRef = collection(db, 'users', user.uid, 'logs');
+      unsubLogs = onSnapshot(logsColRef, (logsSnap) => {
+        const cloudLogs: LogEntry[] = [];
+        logsSnap.forEach((docSnap) => {
+          cloudLogs.push(docSnap.data() as LogEntry);
+        });
+
+        // Sort descending by startTime to keep standard descending list
+        cloudLogs.sort((a, b) => b.startTime - a.startTime);
+        setLogs(cloudLogs);
+      }, (err) => {
+        handleFirestoreError(err, OperationType.GET, `users/${user.uid}/logs`);
+      });
+    };
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      
+      // Clean up previous subscriptions if any (e.g. on log out)
+      if (unsubUser) { unsubUser(); unsubUser = null; }
+      if (unsubLogs) { unsubLogs(); unsubLogs = null; }
+
+      if (user) {
+        testAndSubscribe(user);
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribeAuth();
+      if (unsubUser) unsubUser();
+      if (unsubLogs) unsubLogs();
+    };
   }, []);
 
   // --- Core Tick Loop ---
