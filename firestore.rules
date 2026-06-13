@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Schema Validation Helpers
+    function isValidUser(user) {
+      return user.keys().hasAll(['userId'])
+        && user.userId == request.auth.uid;
+    }
+
+    function isValidLog(log) {
+      return log.keys().hasAll(['id', 'mode', 'startTime', 'endTime', 'duration'])
+        && log.id is string
+        && log.id.size() <= 128
+        && log.mode is string
+        && log.startTime is int
+        && log.endTime is int
+        && log.duration is int;
+    }
+
+    // Rules for User specific documents and resources
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow delete: if isOwner(userId);
+
+      match /logs/{logId} {
+        allow list, get: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidLog(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}

@@ -21,8 +21,15 @@ import {
   Trash2,
   Download,
   Activity,
-  Layers
+  Layers,
+  User,
+  LogIn,
+  Loader2
 } from 'lucide-react';
+import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, getDocFromServer } from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
+import AccountModal from './components/AccountModal';
 
 const LOCAL_STORAGE_KEYS = {
   ACTIVE_MODE: 'cot_active_mode',
@@ -141,6 +148,84 @@ export default function App() {
 
   const isStudying = activeMode === ActivityMode.STUDYING;
 
+  // --- Account & Firebase States ---
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [isLoadingCloud, setIsLoadingCloud] = useState<boolean>(false);
+
+  // Authenticated State Handler & Sync logic
+  useEffect(() => {
+    // Initial verification of server connection as mandated
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (user) {
+        setIsLoadingCloud(true);
+        try {
+          const userDocRef = doc(db, 'users', user.uid);
+          const userDocSnap = await getDoc(userDocRef);
+
+          const logsColRef = collection(db, 'users', user.uid, 'logs');
+          const logsSnap = await getDocs(logsColRef);
+
+          const cloudLogs: LogEntry[] = [];
+          logsSnap.forEach((docSnap) => {
+            cloudLogs.push(docSnap.data() as LogEntry);
+          });
+
+          // Sort descending by startTime to keep standard descending list
+          cloudLogs.sort((a, b) => b.startTime - a.startTime);
+
+          if (userDocSnap.exists()) {
+            const userData = userDocSnap.data();
+            if (userData.activeMode) {
+              setActiveMode(userData.activeMode as ActivityMode);
+            }
+            if (userData.lastStateChange) {
+              setLastStateChange(userData.lastStateChange);
+            }
+            if (userData.sessionStart) {
+              setSessionStart(userData.sessionStart);
+            }
+            if (userData.cumulativeTime) {
+              setCumulativeTime(userData.cumulativeTime as CumulativeTime);
+            }
+            setLogs(cloudLogs);
+          } else {
+            // New cloud registration - push current state to initialize the cloud database
+            await setDoc(userDocRef, {
+              userId: user.uid,
+              activeMode,
+              lastStateChange,
+              sessionStart,
+              cumulativeTime
+            });
+
+            for (const localLog of logs) {
+              await setDoc(doc(db, 'users', user.uid, 'logs', localLog.id), localLog);
+            }
+          }
+        } catch (err: any) {
+          console.error("Firestore loading error: ", err);
+        } finally {
+          setIsLoadingCloud(false);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   // --- Core Tick Loop ---
   useEffect(() => {
     // Request persistent storage so the browser doesn't automatically evict data under storage pressure.
@@ -196,7 +281,7 @@ export default function App() {
   const activeLiveMs = liveTotals[activeMode];
 
   // --- Actions ---
-  const handleActivateMode = (newMode: ActivityMode) => {
+  const handleActivateMode = async (newMode: ActivityMode) => {
     let modeToSet = newMode;
     
     // Toggle design: If they click an active mode, fall back to NOT_STUDYING
@@ -211,6 +296,8 @@ export default function App() {
     const elapsed = Date.now() - lastStateChange;
     const finalElapsed = Math.max(0, elapsed);
 
+    let loggedEntry: LogEntry | null = null;
+
     // Save previous active block to log history
     if (finalElapsed >= 1000) { // Log blocks of at least 1 second
       const newLog: LogEntry = {
@@ -221,33 +308,75 @@ export default function App() {
         duration: finalElapsed,
       };
       setLogs((prev) => [newLog, ...prev]);
+      loggedEntry = newLog;
     }
 
+    const updatedCumulative = {
+      ...cumulativeTime,
+      [activeMode]: (cumulativeTime[activeMode] || 0) + finalElapsed,
+    };
+
     // Allocate time to the departing mode
-    setCumulativeTime((prev) => ({
-      ...prev,
-      [activeMode]: (prev[activeMode] || 0) + finalElapsed,
-    }));
+    setCumulativeTime(updatedCumulative);
 
     // Update active pointers
     playModeSwitchSound(soundEnabled);
     setActiveMode(modeToSet);
-    setLastStateChange(Date.now());
+    const nowTime = Date.now();
+    setLastStateChange(nowTime);
+
+    // Sync to Firestore if user logged in
+    if (currentUser) {
+      try {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        await setDoc(userDocRef, {
+          userId: currentUser.uid,
+          activeMode: modeToSet,
+          lastStateChange: nowTime,
+          sessionStart,
+          cumulativeTime: updatedCumulative
+        });
+
+        if (loggedEntry) {
+          await setDoc(doc(db, 'users', currentUser.uid, 'logs', loggedEntry.id), loggedEntry);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.uid}`);
+      }
+    }
   };
 
-  const handleDeleteLog = (id: string) => {
+  const handleDeleteLog = async (id: string) => {
     const targetLog = logs.find((l) => l.id === id);
     if (!targetLog) return;
 
-    setCumulativeTime((prev) => ({
-      ...prev,
-      [targetLog.mode]: Math.max(0, (prev[targetLog.mode] || 0) - targetLog.duration),
-    }));
+    const updatedCumulative = {
+      ...cumulativeTime,
+      [targetLog.mode]: Math.max(0, (cumulativeTime[targetLog.mode] || 0) - targetLog.duration),
+    };
 
+    setCumulativeTime(updatedCumulative);
     setLogs((prev) => prev.filter((log) => log.id !== id));
+
+    if (currentUser) {
+      try {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        await setDoc(userDocRef, {
+          userId: currentUser.uid,
+          activeMode,
+          lastStateChange,
+          sessionStart,
+          cumulativeTime: updatedCumulative
+        });
+
+        await deleteDoc(doc(db, 'users', currentUser.uid, 'logs', id));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `users/${currentUser.uid}/logs/${id}`);
+      }
+    }
   };
 
-  const handleResetSession = () => {
+  const handleResetSession = async () => {
     playResetSound(soundEnabled);
     setCumulativeTime({ ...DEFAULT_CUMULATIVE_TIMES });
     setLogs([]);
@@ -255,6 +384,27 @@ export default function App() {
     setLastStateChange(Date.now());
     setSessionStart(Date.now());
     setShowResetConfirm(false);
+
+    if (currentUser) {
+      try {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        await setDoc(userDocRef, {
+          userId: currentUser.uid,
+          activeMode: ActivityMode.NOT_STUDYING,
+          lastStateChange: Date.now(),
+          sessionStart: Date.now(),
+          cumulativeTime: { ...DEFAULT_CUMULATIVE_TIMES }
+        });
+
+        const logsColRef = collection(db, 'users', currentUser.uid, 'logs');
+        const logsSnap = await getDocs(logsColRef);
+        for (const docSnap of logsSnap.docs) {
+          await deleteDoc(docSnap.ref);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.uid}`);
+      }
+    }
   };
 
   const handleExportCSV = () => {
@@ -411,6 +561,32 @@ export default function App() {
 
             {/* Header Controls */}
             <div className="flex items-center gap-2">
+              {/* Accounts login & cloud status */}
+              <button
+                onClick={() => setIsAuthModalOpen(true)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[10px] border font-mono uppercase tracking-wider transition-all cursor-pointer ${
+                  currentUser
+                    ? 'border-sky-950 bg-sky-950/10 text-sky-400 hover:bg-sky-950/30'
+                    : 'border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-900'
+                }`}
+                title={currentUser ? `Logged in as ${currentUser.displayName || currentUser.email?.split('@')[0]}` : 'Sign Up / Log In to Cloud Sync'}
+                id="btn-account-auth"
+              >
+                {isLoadingCloud ? (
+                  <Loader2 className="h-3 w-3 animate-spin text-sky-400" />
+                ) : currentUser ? (
+                  <>
+                    <User className="h-3 w-3 text-sky-400" />
+                    <span className="max-w-[70px] truncate">{currentUser.displayName || currentUser.email?.split('@')[0]}</span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="h-3 w-3" />
+                    <span>Log In / Register</span>
+                  </>
+                )}
+              </button>
+
               {/* Clean Reset Button */}
               {!showResetConfirm ? (
                 <button
@@ -618,6 +794,14 @@ export default function App() {
 
     </div>
       )}
+
+      <AccountModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        currentUser={currentUser}
+        onAuthChange={(user) => setCurrentUser(user)}
+        totalLogsCount={logs.length}
+      />
     </>
   );
 }

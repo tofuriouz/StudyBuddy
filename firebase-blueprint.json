@@ -1,0 +1,43 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile containing general session states and accumulated times.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The firebase auth user ID." },
+        "activeMode": { "type": "string", "description": "Current active mode 'STUDYING' or 'NOT_STUDYING'." },
+        "lastStateChange": { "type": "integer", "description": "Epoch timestamp of last state change." },
+        "sessionStart": { "type": "integer", "description": "Epoch timestamp of when current session started." },
+        "cumulativeTime": {
+          "type": "object",
+          "description": "Accumulated time per category."
+        }
+      },
+      "required": ["userId"]
+    },
+    "Log": {
+      "title": "Log",
+      "description": "A single logged focus session record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique log identity." },
+        "mode": { "type": "string", "description": "Focus or rest mode designation." },
+        "startTime": { "type": "integer", "description": "Epoch starting timestamp." },
+        "endTime": { "type": "integer", "description": "Epoch ending timestamp." },
+        "duration": { "type": "integer", "description": "Elapsed duration in milliseconds." }
+      },
+      "required": ["id", "mode", "startTime", "endTime", "duration"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User specific session configurations and aggregated metrics."
+    },
+    "users/{userId}/logs/{logId}": {
+      "schema": "Log",
+      "description": "Historic focus logging history entries."
+    }
+  }
+}
