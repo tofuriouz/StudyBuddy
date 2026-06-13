@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ActivityMode, CumulativeTime, LogEntry } from './types';
 import { ACTIVITY_CONFIGS } from './constants';
@@ -71,33 +71,39 @@ export default function App() {
     return ActivityMode.NOT_STUDYING;
   });
 
+  // --- Synchronized Reference Clock ---
+  const [clockOffset, setClockOffset] = useState<number>(0);
+  const getServerNow = () => Date.now() + clockOffset;
+
+  useEffect(() => {
+    const fetchServerOffset = async () => {
+      try {
+        const startFetch = Date.now();
+        const response = await fetch('/?cb=' + Date.now(), { method: 'HEAD' });
+        const serverDate = response.headers.get('date');
+        if (serverDate) {
+          const serverMs = new Date(serverDate).getTime();
+          const latency = (Date.now() - startFetch) / 2;
+          const estimatedServerNow = serverMs + latency;
+          const offset = estimatedServerNow - Date.now();
+          setClockOffset(offset);
+          console.log(`[Clock Sync] Offset computed: ${offset}ms`);
+        }
+      } catch (err) {
+        console.warn('[Clock Sync] Sync offset failed:', err);
+      }
+    };
+    fetchServerOffset();
+    const intervalId = setInterval(fetchServerOffset, 45000);
+    return () => clearInterval(intervalId);
+  }, []);
+
   const [lastStateChange, setLastStateChange] = useState<number>(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEYS.LAST_STATE_CHANGE);
       if (saved) return parseInt(saved, 10);
     } catch {}
     return Date.now();
-  });
-
-  const [cumulativeTime, setCumulativeTime] = useState<CumulativeTime>(() => {
-    try {
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEYS.CUMULATIVE_TIME);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const migrated: CumulativeTime = {
-          STUDYING: parsed.STUDYING || 0,
-          NOT_STUDYING: parsed.NOT_STUDYING || 0,
-        };
-        // Accumulate and merge any legacy activity times safely into NOT_STUDYING
-        Object.keys(parsed).forEach((key) => {
-          if (key !== 'STUDYING' && key !== 'NOT_STUDYING') {
-            migrated.NOT_STUDYING += (parsed[key] || 0);
-          }
-        });
-        return migrated;
-      }
-    } catch {}
-    return { ...DEFAULT_CUMULATIVE_TIMES };
   });
 
   const [logs, setLogs] = useState<LogEntry[]>(() => {
@@ -116,6 +122,17 @@ export default function App() {
     } catch {}
     return [];
   });
+
+  // Derived cumulative times directly from logs to prevent multi-device status drifts
+  const cumulativeTime = useMemo<CumulativeTime>(() => {
+    const base: CumulativeTime = { STUDYING: 0, NOT_STUDYING: 0 };
+    logs.forEach(log => {
+      if (log.mode === ActivityMode.STUDYING || log.mode === ActivityMode.NOT_STUDYING) {
+        base[log.mode] += log.duration;
+      }
+    });
+    return base;
+  }, [logs]);
 
   const [sessionStart, setSessionStart] = useState<number>(() => {
     try {
@@ -182,8 +199,7 @@ export default function App() {
             userId: user.uid,
             activeMode,
             lastStateChange,
-            sessionStart,
-            cumulativeTime
+            sessionStart
           });
 
           for (const localLog of logs) {
@@ -209,15 +225,6 @@ export default function App() {
           }
           if (userData.sessionStart) {
             setSessionStart(prev => prev !== userData.sessionStart ? userData.sessionStart : prev);
-          }
-          if (userData.cumulativeTime) {
-            setCumulativeTime(prev => {
-              const cloudCum = userData.cumulativeTime as CumulativeTime;
-              const changed = Object.keys(cloudCum).some(
-                key => prev[key as ActivityMode] !== cloudCum[key as ActivityMode]
-              );
-              return changed ? cloudCum : prev;
-            });
           }
         }
       }, (err) => {
@@ -271,10 +278,10 @@ export default function App() {
     }
 
     const interval = setInterval(() => {
-      setNow(Date.now());
+      setNow(getServerNow());
     }, 200); // Ticks 5 times per second for responsive stopwatch
     return () => clearInterval(interval);
-  }, []);
+  }, [clockOffset]);
 
   // --- Local Storage Synchronization ---
   useEffect(() => {
@@ -326,7 +333,7 @@ export default function App() {
       }
     }
 
-    const elapsed = Date.now() - lastStateChange;
+    const elapsed = getServerNow() - lastStateChange;
     const finalElapsed = Math.max(0, elapsed);
 
     let loggedEntry: LogEntry | null = null;
@@ -337,25 +344,17 @@ export default function App() {
         id: Math.random().toString(36).substring(2, 9),
         mode: activeMode,
         startTime: lastStateChange,
-        endTime: Date.now(),
+        endTime: getServerNow(),
         duration: finalElapsed,
       };
       setLogs((prev) => [newLog, ...prev]);
       loggedEntry = newLog;
     }
 
-    const updatedCumulative = {
-      ...cumulativeTime,
-      [activeMode]: (cumulativeTime[activeMode] || 0) + finalElapsed,
-    };
-
-    // Allocate time to the departing mode
-    setCumulativeTime(updatedCumulative);
-
     // Update active pointers
     playModeSwitchSound(soundEnabled);
     setActiveMode(modeToSet);
-    const nowTime = Date.now();
+    const nowTime = getServerNow();
     setLastStateChange(nowTime);
 
     // Sync to Firestore if user logged in
@@ -366,8 +365,7 @@ export default function App() {
           userId: currentUser.uid,
           activeMode: modeToSet,
           lastStateChange: nowTime,
-          sessionStart,
-          cumulativeTime: updatedCumulative
+          sessionStart
         });
 
         if (loggedEntry) {
@@ -383,12 +381,6 @@ export default function App() {
     const targetLog = logs.find((l) => l.id === id);
     if (!targetLog) return;
 
-    const updatedCumulative = {
-      ...cumulativeTime,
-      [targetLog.mode]: Math.max(0, (cumulativeTime[targetLog.mode] || 0) - targetLog.duration),
-    };
-
-    setCumulativeTime(updatedCumulative);
     setLogs((prev) => prev.filter((log) => log.id !== id));
 
     if (currentUser) {
@@ -398,8 +390,7 @@ export default function App() {
           userId: currentUser.uid,
           activeMode,
           lastStateChange,
-          sessionStart,
-          cumulativeTime: updatedCumulative
+          sessionStart
         });
 
         await deleteDoc(doc(db, 'users', currentUser.uid, 'logs', id));
@@ -411,11 +402,10 @@ export default function App() {
 
   const handleResetSession = async () => {
     playResetSound(soundEnabled);
-    setCumulativeTime({ ...DEFAULT_CUMULATIVE_TIMES });
     setLogs([]);
     setActiveMode(ActivityMode.NOT_STUDYING);
-    setLastStateChange(Date.now());
-    setSessionStart(Date.now());
+    setLastStateChange(getServerNow());
+    setSessionStart(getServerNow());
     setShowResetConfirm(false);
 
     if (currentUser) {
@@ -424,9 +414,8 @@ export default function App() {
         await setDoc(userDocRef, {
           userId: currentUser.uid,
           activeMode: ActivityMode.NOT_STUDYING,
-          lastStateChange: Date.now(),
-          sessionStart: Date.now(),
-          cumulativeTime: { ...DEFAULT_CUMULATIVE_TIMES }
+          lastStateChange: getServerNow(),
+          sessionStart: getServerNow()
         });
 
         const logsColRef = collection(db, 'users', currentUser.uid, 'logs');
