@@ -695,10 +695,7 @@ export default function CountDownScreen() {
               <Settings2 className="h-4 w-4 group-hover:rotate-45 transition-transform duration-300" />
             </button>
 
-            {/* Subtle backdrop glow */}
-            {oledSettings.background !== 'pure' && (
-              <div className="absolute top-0 right-1/4 w-96 h-96 bg-zinc-800/5 rounded-full blur-[120px] pointer-events-none" />
-            )}
+
 
             <div>
               {/* Top row of countdown block */}
