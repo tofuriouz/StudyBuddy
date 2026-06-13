@@ -1,0 +1,6 @@
+{
+  "name": "Constantly On Timer",
+  "description": "A simplified productivity and time tracking tool that always runs a timer, transitioning between studying and not studying to help you visualize and balance your daily focus.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
